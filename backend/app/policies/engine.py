@@ -127,6 +127,8 @@ def evaluate_limit_increase(card_id: str, requested_limit: float, db: Session) -
             policy_evaluated="Existing Limit Sufficient",
             reason=f"Your current limit is already ${card.credit_limit:,.0f}.",
             action_type="LIMIT",
+        )
+
     # If already at or above tier cap
     if card.credit_limit >= tier_cap:
         return PolicyResult(

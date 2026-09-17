@@ -12,6 +12,15 @@ export async function fetchMemberProfile(memberId = 'RKA-00-8821') {
 }
 
 /**
+ * Fetch all cards
+ */
+export async function fetchCards(memberId = 'RKA-00-8821') {
+    const res = await fetch(`${API_BASE}/cards?member_id=${memberId}`);
+    if (!res.ok) throw new Error('Failed to fetch cards');
+    return res.json();
+}
+
+/**
  * Fetch the permanent cryptographic audit ledger
  */
 export async function fetchAuditLogs() {
