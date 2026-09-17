@@ -12,11 +12,18 @@ export default defineConfig(({ mode }) => ({
   },
   server: {
     host: '0.0.0.0',
-    port: parseInt(process.env.PORT || '8443'),
-    strictPort: true,
+    port: parseInt(process.env.PORT || '5173'),
+    strictPort: false,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        secure: false,
+      },
+    },
   },
   preview: {
     host: '0.0.0.0',
-    port: parseInt(process.env.PORT || '8443'),
+    port: parseInt(process.env.PORT || '4173'),
   },
 }))

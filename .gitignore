@@ -1,24 +1,51 @@
+# Dependencies
 node_modules/
-dist/
-.env
-.DS_Store
-/.tmp
-# Node modules
-node_modules/
+**/node_modules/
+venv/
+**/venv/
+.venv/
+**/.venv/
+env/
+**/env/
 
-# Vite build output
+# Build and cache
 dist/
+**/dist/
 .vite/
+**/.vite/
+__pycache__/
+**/__pycache__/
+*.pyc
+**/*.pyc
+.pytest_cache/
+**/.pytest_cache/
 
-# Temporary build and cache
+# Databases (re-created via seed.py)
+*.db
+**/*.db
+*.sqlite
+**/*.sqlite
+*.sqlite3
+**/*.sqlite3
+
+# Environment and secrets (CRITICAL)
+.env
+**/.env
+.env.local
+**/.env.local
+*.local
+**/*.local
+
+# Logs and system
 .tmp/
-
-# Logs and system files
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+**/.tmp/
 .DS_Store
+**/.DS_Store
+*.log
+npm-debug.log*
 
-# IDE dirs
+# IDE
 .vscode/
+.idea/
+
+
