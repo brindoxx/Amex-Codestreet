@@ -1,5 +1,11 @@
 # backend/test_phase1.py
 import sys
+import uuid
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 from app.models.database import SessionLocal, Card, Member
 from app.policies.engine import (
     evaluate_fee_reversal,
@@ -11,6 +17,13 @@ from app.ledger.chain import record_audit_action, verify_chain_integrity
 
 def run_tests():
     db = SessionLocal()
+    # Reset c1 limit to baseline for deterministic tests
+    c1 = db.query(Card).filter(Card.id == "c1").first()
+    if c1:
+        c1.credit_limit = 8500.0
+        c1.is_locked = False
+        db.commit()
+
     print("=" * 65)
     print("🚀 RUNNING AMEX INTELLIGATE — PHASE 1 VALIDATION SUITE")
     print("=" * 65)
@@ -85,9 +98,10 @@ def run_tests():
         # -------------------------------------------------------------
         print("\n[TEST 4] Testing Cryptographic Hash-Chained Audit Ledger...")
         # 4A: Record an action
+        test_action_id = f"LIM-{uuid.uuid4().hex[:4].upper()}"
         new_entry = record_audit_action(
             db=db,
-            action_id="LIM-2291",
+            action_id=test_action_id,
             member_id="RKA-00-8821",
             card_id="c1",
             action_type="LIMIT",
@@ -101,8 +115,8 @@ def run_tests():
 
         # 4B: Verify chain integrity (Should PASS)
         is_pristine, stats = verify_chain_integrity(db)
-        print(f"  • Chain Integrity Check: Pristine={is_pristine} (Total blocks: {stats.get('total_blocks')})")
-        assert is_pristine is True, "Expected ledger to be verified pristine"
+        print(f"  • Chain Integrity Check: Pristine={is_pristine} (Stats: {stats})")
+        assert is_pristine is True, f"Expected ledger to be verified pristine, got: {stats}"
         print("  ✓ Cryptographic hash chain verified!")
 
         # 4C: SIMULATE MALICIOUS ATTACK (Tamper with SQLite data directly!)

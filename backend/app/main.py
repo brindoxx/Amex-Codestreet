@@ -148,6 +148,46 @@ def verify_audit_ledger(db: Session = Depends(get_db)):
     }
 
 
+@app.get("/api/members")
+def get_all_members(db: Session = Depends(get_db)):
+    """Fetch all mock members with their cards and persona metadata for easy login/switching."""
+    members = db.query(Member).all()
+    results = []
+    persona_notes = {
+        "RKA-00-8821": "Primary Persona (90-Day Fee Denial & Tier Cap)",
+        "MVA-01-4419": "Instant Approval Persona (Waiver >90 Days)",
+        "ERO-02-9930": "High Net Worth / Underwriter Escalation ($50k)",
+    }
+    for m in members:
+        cards = db.query(Card).filter(Card.member_id == m.id).all()
+        results.append({
+            "id": m.id,
+            "name": m.name,
+            "email": m.email,
+            "phone": m.phone,
+            "credit_score": m.credit_score,
+            "annual_spend": m.annual_spend,
+            "member_since": m.member_since,
+            "tier": cards[0].tier if cards else "Platinum",
+            "persona_tag": persona_notes.get(m.id, "Standard Card Member"),
+            "card_count": len(cards),
+            "cards": [
+                {
+                    "id": c.id,
+                    "name": c.card_name,
+                    "last4": c.last4,
+                    "tier": c.tier,
+                    "limit": c.credit_limit,
+                    "balance": c.balance,
+                    "is_locked": c.is_locked,
+                    "lock_reason": c.lock_reason,
+                }
+                for c in cards
+            ]
+        })
+    return results
+
+
 @app.get("/api/escalations")
 def get_escalations(db: Session = Depends(get_db)):
     """Fetch generated Service Request tickets for the internal agent console."""
@@ -168,6 +208,54 @@ def get_escalations(db: Session = Depends(get_db)):
         }
         for t in tickets
     ]
+
+
+class EscalationResolutionRequest(BaseModel):
+    action: str = "APPROVE"  # "APPROVE" or "RESOLVED"
+    notes: Optional[str] = None
+    override_limit: Optional[float] = None
+
+
+@app.post("/api/escalations/{sr_number}/resolve")
+def resolve_escalation(sr_number: str, req: EscalationResolutionRequest, db: Session = Depends(get_db)):
+    """Human underwriter approves or resolves an escalated SR ticket."""
+    ticket = db.query(ServiceRequest).filter(ServiceRequest.sr_number == sr_number).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Service Request ticket not found")
+
+    ticket.status = "APPROVED" if req.action == "APPROVE" else "RESOLVED"
+
+    # If limit increase was requested, apply manual underwriter limit to the card
+    if ticket.intent == "LIMIT_INCREASE" and req.action == "APPROVE":
+        card = db.query(Card).filter(Card.id == ticket.card_id).first()
+        if card:
+            new_limit = req.override_limit or 25000.0
+            card.credit_limit = new_limit
+
+    db.commit()
+    return {
+        "success": True,
+        "sr_number": ticket.sr_number,
+        "status": ticket.status,
+        "message": f"Service Request {sr_number} {ticket.status.lower()} by underwriter."
+    }
+
+
+@app.post("/api/escalations/{sr_number}/review")
+def mark_escalation_in_review(sr_number: str, db: Session = Depends(get_db)):
+    """Mark ticket as under active review."""
+    ticket = db.query(ServiceRequest).filter(ServiceRequest.sr_number == sr_number).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Service Request ticket not found")
+
+    ticket.status = "UNDER_REVIEW"
+    db.commit()
+    return {
+        "success": True,
+        "sr_number": ticket.sr_number,
+        "status": "UNDER_REVIEW",
+        "message": f"Service Request {sr_number} moved to underwriter review queue."
+    }
 
 
 # -------------------------------------------------------------------

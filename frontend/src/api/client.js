@@ -81,3 +81,41 @@ export async function verifyOtpAndResume(otp, cardId = 'c1', memberId = 'RKA-00-
     if (!res.ok) throw new Error(`Auth error: ${res.statusText}`);
     return res.json();
 }
+
+/**
+ * Fetch all available mock members for login/switching
+ */
+export async function fetchMembers() {
+    const res = await fetch(`${API_BASE}/members`);
+    if (!res.ok) throw new Error('Failed to fetch members');
+    return res.json();
+}
+
+/**
+ * Human underwriter resolves/approves an escalation ticket
+ */
+export async function resolveEscalation(srNumber, action = 'APPROVE', overrideLimit = null, notes = '') {
+    const res = await fetch(`${API_BASE}/escalations/${srNumber}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action,
+            override_limit: overrideLimit,
+            notes,
+        }),
+    });
+    if (!res.ok) throw new Error('Failed to resolve escalation ticket');
+    return res.json();
+}
+
+/**
+ * Mark escalation ticket as in review
+ */
+export async function markEscalationInReview(srNumber) {
+    const res = await fetch(`${API_BASE}/escalations/${srNumber}/review`, {
+        method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to mark escalation in review');
+    return res.json();
+}
+

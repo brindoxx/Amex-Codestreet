@@ -6,7 +6,10 @@ import {
     verifyAuditLedger,
     fetchEscalations,
     fetchMemberProfile,
-    fetchCards
+    fetchCards,
+    fetchMembers,
+    resolveEscalation,
+    markEscalationInReview,
 } from './api/client';
 
 (function () {
@@ -16,11 +19,162 @@ import {
     document.head.appendChild(l);
 })();
 
+// ─── Global Toast Utility ─────────────────────────────────────────────────────
+export function showToast(message, type = 'info') {
+    window.dispatchEvent(new CustomEvent('amex-toast', { detail: { message, type } }));
+}
+
+// ─── Floating Toast Notification System ───────────────────────────────────────
+function ToastContainer({ toasts, onDismiss }) {
+    if (!toasts || toasts.length === 0) return null;
+    return (
+        <div style={{
+            position: 'fixed',
+            bottom: 24,
+            right: 24,
+            zIndex: 9999,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            pointerEvents: 'none',
+        }}>
+            {toasts.map(toast => {
+                const bg = toast.type === 'success' ? '#065F46' : toast.type === 'warning' ? '#92400E' : toast.type === 'error' ? '#991B1B' : '#0F2847';
+                const border = toast.type === 'success' ? '#059669' : toast.type === 'warning' ? '#D97706' : toast.type === 'error' ? '#DC2626' : '#016FD0';
+                return (
+                    <div
+                        key={toast.id}
+                        style={{
+                            pointerEvents: 'auto',
+                            background: bg,
+                            border: `1px solid ${border}`,
+                            color: '#fff',
+                            padding: '12px 18px',
+                            borderRadius: 10,
+                            boxShadow: '0 8px 30px rgba(0,0,0,0.35)',
+                            fontSize: 13,
+                            fontWeight: 500,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            animation: 'fade-in 0.25s ease',
+                            maxWidth: 400,
+                        }}
+                    >
+                        <span>{toast.type === 'success' ? '✓' : toast.type === 'warning' ? '⚠' : toast.type === 'error' ? '✕' : 'ℹ'}</span>
+                        <span style={{ flex: 1 }}>{toast.message}</span>
+                        {onDismiss && (
+                            <button
+                                onClick={() => onDismiss(toast.id)}
+                                style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.6)', cursor: 'pointer', fontSize: 14, padding: 0 }}
+                            >
+                                ✕
+                            </button>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+// ─── Default Personas for Mock Testing ────────────────────────────────────────
+const DEFAULT_PERSONAS = [
+    {
+        id: 'RKA-00-8821',
+        name: 'Riya Kapoor',
+        email: 'riya.kapoor@gmail.com',
+        phone: '+1 (917) 555-8234',
+        credit_score: 812,
+        annual_spend: 94200,
+        member_since: 2019,
+        tier: 'Platinum',
+        card_count: 3,
+        avatar: 'RK',
+        avatar_bg: 'linear-gradient(135deg,#016FD0,#0A1628)',
+        persona_tag: 'Policy Edge-Case (90-Day Fee Denial & Tier Cap)',
+        tag_color: '#DC2626',
+        tag_bg: 'rgba(220,38,38,0.1)',
+        test_case_desc: 'Fee waiver processed 45d ago triggers automated 90-day denial; $12k limit increase capped at $10,000 tier maximum with OTP.',
+    },
+    {
+        id: 'MVA-01-4419',
+        name: 'Marcus Vance',
+        email: 'marcus.vance@example.com',
+        phone: '+1 (415) 555-0199',
+        credit_score: 750,
+        annual_spend: 42000,
+        member_since: 2021,
+        tier: 'Gold',
+        card_count: 1,
+        avatar: 'MV',
+        avatar_bg: 'linear-gradient(135deg,#C9A84C,#8B6914)',
+        persona_tag: 'Instant Approval (Waiver >90 Days Cleared)',
+        tag_color: '#059669',
+        tag_bg: 'rgba(5,150,105,0.1)',
+        test_case_desc: 'Fee waiver last processed 120 days ago (>90d rule passes cleanly); triggers instant autonomous waiver approval without denial.',
+    },
+    {
+        id: 'ERO-02-9930',
+        name: 'Elena Rostova',
+        email: 'elena.rostova@luxuryholdings.com',
+        phone: '+1 (310) 555-9930',
+        credit_score: 845,
+        annual_spend: 215000,
+        member_since: 2015,
+        tier: 'Centurion',
+        card_count: 1,
+        avatar: 'ER',
+        avatar_bg: 'linear-gradient(135deg,#262626,#0A1628)',
+        persona_tag: 'Underwriter Escalation ($50,000 High-Risk)',
+        tag_color: '#7C3AED',
+        tag_bg: 'rgba(124,58,237,0.1)',
+        test_case_desc: 'High-value $50k credit request exceeds auto-approval limits; generates formal SR ticket dossier for senior underwriter handoff.',
+    },
+];
+
+// Helper to ensure all cards have proper themes & gradients
+function enrichCard(c, holderName = 'RIYA KAPOOR') {
+    if (!c) return null;
+    let color = ['#016FD0', '#003D8F'];
+    let textColor = '#fff';
+    let network = 'Cash Back';
+
+    if (c.tier === 'Centurion') {
+        color = ['#232526', '#090909'];
+        textColor = '#f5f5f5';
+        network = 'Centurion Black';
+    } else if (c.tier === 'Platinum') {
+        color = ['#8B8B8B', '#2C2C2C'];
+        textColor = '#fff';
+        network = 'Centurion';
+    } else if (c.tier === 'Gold') {
+        color = ['#C9A84C', '#8B6914'];
+        textColor = '#fff';
+        network = 'Rewards';
+    }
+
+    return {
+        id: c.id,
+        name: c.name || c.card_name || 'AmEx Card',
+        last4: c.last4 || '0000',
+        tier: c.tier || 'Platinum',
+        limit: c.limit || c.credit_limit || 5000,
+        balance: c.balance || c.current_balance || 0,
+        is_locked: !!c.is_locked,
+        lock_reason: c.lock_reason,
+        color,
+        textColor,
+        network,
+        holderName,
+    };
+}
+
 // ─── Default Card Data ────────────────────────────────────────────────────────
 const DEFAULT_CARDS = [
-    { id: 'c1', name: 'Platinum Card', last4: '8234', tier: 'Platinum', limit: 8500, balance: 2340.50, color: ['#8B8B8B', '#2C2C2C'], textColor: '#fff', network: 'Centurion' },
-    { id: 'c2', name: 'Gold Card', last4: '5612', tier: 'Gold', limit: 5000, balance: 870.20, color: ['#C9A84C', '#8B6914'], textColor: '#fff', network: 'Rewards' },
-    { id: 'c3', name: 'Blue Cash Preferred', last4: '9901', tier: 'Blue Cash Preferred', limit: 3200, balance: 155.00, color: ['#016FD0', '#003D8F'], textColor: '#fff', network: 'Cash Back' },
+    { id: 'c1', name: 'Platinum Card', last4: '8234', tier: 'Platinum', limit: 8500, balance: 2340.50, color: ['#8B8B8B', '#2C2C2C'], textColor: '#fff', network: 'Centurion', holderName: 'RIYA KAPOOR' },
+    { id: 'c2', name: 'Gold Card', last4: '5612', tier: 'Gold', limit: 5000, balance: 870.20, color: ['#C9A84C', '#8B6914'], textColor: '#fff', network: 'Rewards', holderName: 'RIYA KAPOOR' },
+    { id: 'c3', name: 'Blue Cash Preferred', last4: '9901', tier: 'Blue Cash Preferred', limit: 3200, balance: 155.00, color: ['#016FD0', '#003D8F'], textColor: '#fff', network: 'Cash Back', holderName: 'RIYA KAPOOR' },
 ];
 
 // ─── SVG Logos ────────────────────────────────────────────────────────────────
@@ -52,9 +206,10 @@ function AmexWordmark() {
 }
 
 // ─── Physical Card Component ──────────────────────────────────────────────────
-function PhysicalCard({ card, small = false, selected = false, onClick }) {
+function PhysicalCard({ card, small = false, selected = false, onClick, holderName }) {
     const w = small ? 200 : 340;
     const h = small ? 126 : 214;
+    const displayName = (card?.holderName || holderName || 'RIYA KAPOOR').toUpperCase();
     return (
         <div
             onClick={onClick}
@@ -90,7 +245,7 @@ function PhysicalCard({ card, small = false, selected = false, onClick }) {
                 •••• •••• •••• {card.last4}
             </div>
             <div style={{ position: 'absolute', bottom: small ? 14 : 22, left: small ? 12 : 20 }}>
-                <div style={{ fontSize: small ? 7 : 11, opacity: 0.6, letterSpacing: '0.1em', marginBottom: 2 }}>RIYA KAPOOR</div>
+                <div style={{ fontSize: small ? 7 : 11, opacity: 0.6, letterSpacing: '0.1em', marginBottom: 2 }}>{displayName}</div>
                 <div style={{ fontSize: small ? 8 : 13, fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'Inter,sans-serif' }}>{card.name.toUpperCase()}</div>
             </div>
             <div style={{ position: 'absolute', bottom: small ? 14 : 22, right: small ? 10 : 18, fontSize: small ? 6 : 9, opacity: 0.7, letterSpacing: '0.08em', textAlign: 'right' }}>{card.network}</div>
@@ -212,7 +367,18 @@ function AuditBadge({ id, hash, onView }) {
             <span style={{ color: '#016FD0', fontWeight: 500 }}>Logged as {id}</span>
             <span style={{ color: 'rgba(10,22,40,0.4)' }}>·</span>
             <span>Hash: {hash ? (hash.length > 14 ? hash.substring(0, 14) + '...' : hash) : 'N/A'}</span>
-            <button onClick={() => { if (hash) { navigator.clipboard?.writeText(hash); setCopied(true); setTimeout(() => setCopied(false), 1500); } }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: copied ? '#22c55e' : 'rgba(10,22,40,0.4)', padding: 0 }} title="Copy SHA-256 Hash">
+            <button
+                onClick={() => {
+                    if (hash) {
+                        navigator.clipboard?.writeText(hash);
+                        setCopied(true);
+                        showToast(`SHA-256 Hash (${hash.substring(0, 10)}...) copied to clipboard`, 'info');
+                        setTimeout(() => setCopied(false), 1500);
+                    }
+                }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: copied ? '#22c55e' : 'rgba(10,22,40,0.4)', padding: 0 }}
+                title="Copy SHA-256 Hash"
+            >
                 <Icon.Copy />
             </button>
             {onView && (
@@ -349,27 +515,126 @@ const VOICE_TRANSCRIPT = [
     { from: 'agent', text: 'Perfect, identity verified. Processing your limit increase to $10,000 now. This will take effect within 15 minutes.' },
 ];
 
-function VoiceCallView({ onEnd, card }) {
-    const [visibleCount, setVisibleCount] = useState(1);
+function VoiceCallView({ onEnd, card, currentUser }) {
+    const [messages, setMessages] = useState([]);
+    const [status, setStatus] = useState('speaking'); // 'speaking' | 'listening' | 'thinking'
     const [elapsed, setElapsed] = useState(0);
+    const [currentTranscript, setCurrentTranscript] = useState('');
     const endRef = useRef(null);
+    const recognizerRef = useRef(null);
+    const isMountedRef = useRef(true);
     const bars = [0.4, 0.7, 1, 0.85, 0.6, 0.9, 0.5, 0.75, 1, 0.65, 0.8, 0.45, 0.7, 0.55, 0.9, 0.5, 0.65, 0.8, 0.7, 0.4];
 
+    const firstName = currentUser?.name ? currentUser.name.split(' ')[0] : 'Member';
+
+    // Elapsed session timer
     useEffect(() => {
+        isMountedRef.current = true;
         const tick = setInterval(() => setElapsed(e => e + 1), 1000);
-        return () => clearInterval(tick);
+        return () => {
+            isMountedRef.current = false;
+            clearInterval(tick);
+            stopSpeech();
+            try {
+                recognizerRef.current?.stop();
+            } catch { }
+        };
     }, []);
 
     useEffect(() => {
-        if (visibleCount < VOICE_TRANSCRIPT.length) {
-            const t = setTimeout(() => setVisibleCount(v => v + 1), 2400);
-            return () => clearTimeout(t);
-        }
-    }, [visibleCount]);
-
-    useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [visibleCount]);
+    }, [messages, status, currentTranscript]);
+
+    const startListening = () => {
+        if (!isMountedRef.current) return;
+        setStatus('listening');
+        setCurrentTranscript('');
+
+        const recognizer = createSpeechRecognizer({
+            onResult: (text, isFinal) => {
+                if (!isMountedRef.current) return;
+                setCurrentTranscript(text);
+                if (isFinal && text.trim()) {
+                    handleUserSpeech(text.trim());
+                }
+            },
+            onEnd: () => { },
+            onError: () => {
+                if (isMountedRef.current) setStatus('listening');
+            }
+        });
+
+        if (recognizer) {
+            recognizerRef.current = recognizer;
+            try {
+                recognizer.start();
+            } catch { }
+        }
+    };
+
+    const handleUserSpeech = async (userText) => {
+        try {
+            recognizerRef.current?.stop();
+        } catch { }
+        setMessages(prev => [...prev, { from: 'user', text: userText }]);
+        setCurrentTranscript('');
+        setStatus('thinking');
+
+        try {
+            const data = await sendChatMessage(userText, card?.id, currentUser?.id || 'RKA-00-8821');
+            const agentReply = data.response;
+            if (!isMountedRef.current) return;
+
+            setMessages(prev => [...prev, { from: 'agent', text: agentReply }]);
+            setStatus('speaking');
+
+            speakAmexVoice(agentReply, {
+                onEnd: () => {
+                    if (isMountedRef.current) startListening();
+                }
+            });
+        } catch {
+            if (!isMountedRef.current) return;
+            const errReply = "I am ready to assist. Please speak your request regarding credit limits, fee waivers, or card replacement.";
+            setMessages(prev => [...prev, { from: 'agent', text: errReply }]);
+            setStatus('speaking');
+            speakAmexVoice(errReply, {
+                onEnd: () => {
+                    if (isMountedRef.current) startListening();
+                }
+            });
+        }
+    };
+
+    // Initial greeting on connect
+    useEffect(() => {
+        const welcomeText = `Good afternoon, ${firstName}. This is American Express Intelligate. How can I assist you with your ${card?.name || 'Card'} today?`;
+        setMessages([{ from: 'agent', text: welcomeText }]);
+        setStatus('speaking');
+
+        const timer = setTimeout(() => {
+            speakAmexVoice(welcomeText, {
+                onEnd: () => {
+                    if (isMountedRef.current) startListening();
+                }
+            });
+        }, 400);
+
+        return () => clearTimeout(timer);
+    }, [card?.id]);
+
+    const handleInterrupt = () => {
+        stopSpeech();
+        startListening();
+    };
+
+    const handleEndCall = () => {
+        stopSpeech();
+        try {
+            recognizerRef.current?.stop();
+        } catch { }
+        onEnd();
+    };
 
     const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
@@ -377,7 +642,7 @@ function VoiceCallView({ onEnd, card }) {
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--amex-navy)' }}>
             <div style={{ padding: '14px 24px', background: 'rgba(255,255,255,0.05)', borderBottom: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ADE80', boxShadow: '0 0 8px #4ADE80' }} />
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: status === 'speaking' ? '#4ADE80' : status === 'listening' ? '#38BDF8' : '#FBBF24', boxShadow: `0 0 8px ${status === 'speaking' ? '#4ADE80' : status === 'listening' ? '#38BDF8' : '#FBBF24'}` }} />
                     <span style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>Live Voice Session</span>
                     <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>·</span>
                     <span style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, fontFamily: "'DM Mono',monospace" }}>{fmt(elapsed)}</span>
@@ -386,39 +651,100 @@ function VoiceCallView({ onEnd, card }) {
             </div>
 
             <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-                <div style={{ width: 340, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 24px', borderRight: '1px solid rgba(255,255,255,0.07)', gap: 32 }}>
+                {/* Visualizer & Agent Stage */}
+                <div style={{ width: 340, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 24px', borderRight: '1px solid rgba(255,255,255,0.07)', gap: 28 }}>
                     <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <div style={{ position: 'absolute', width: 180, height: 180, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.15)', animation: 'pulse-ring 2.4s ease-out infinite' }} />
-                        <div style={{ position: 'absolute', width: 140, height: 140, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.22)', animation: 'pulse-ring 2.4s ease-out 0.6s infinite' }} />
-                        <div style={{ position: 'absolute', width: 106, height: 106, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.3)', animation: 'pulse-ring 2.4s ease-out 1.2s infinite' }} />
-                        <div style={{ width: 84, height: 84, borderRadius: '50%', background: 'linear-gradient(135deg,#016FD0,#003D8F)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 32px rgba(1,111,208,0.5)', animation: 'glow-pulse 2s ease-in-out infinite' }}>
-                            <SpeakerHumanIcon size={52} color="#fff" />
+                        {status === 'speaking' && (
+                            <>
+                                <div style={{ position: 'absolute', width: 180, height: 180, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.15)', animation: 'pulse-ring 2.4s ease-out infinite' }} />
+                                <div style={{ position: 'absolute', width: 140, height: 140, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.22)', animation: 'pulse-ring 2.4s ease-out 0.6s infinite' }} />
+                                <div style={{ position: 'absolute', width: 106, height: 106, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.3)', animation: 'pulse-ring 2.4s ease-out 1.2s infinite' }} />
+                            </>
+                        )}
+                        {status === 'listening' && (
+                            <>
+                                <div style={{ position: 'absolute', width: 160, height: 160, borderRadius: '50%', border: '1.5px solid rgba(56,189,248,0.3)', animation: 'pulse-ring 2.0s ease-out infinite' }} />
+                                <div style={{ position: 'absolute', width: 120, height: 120, borderRadius: '50%', border: '1.5px solid rgba(56,189,248,0.4)', animation: 'pulse-ring 2.0s ease-out 0.8s infinite' }} />
+                            </>
+                        )}
+                        <div style={{
+                            width: 84, height: 84, borderRadius: '50%',
+                            background: status === 'speaking' ? 'linear-gradient(135deg,#016FD0,#003D8F)' : status === 'listening' ? 'linear-gradient(135deg,#0284C7,#0369A1)' : 'linear-gradient(135deg,#4B5563,#1F2937)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            boxShadow: status === 'speaking' ? '0 0 32px rgba(1,111,208,0.5)' : status === 'listening' ? '0 0 32px rgba(56,189,248,0.5)' : 'none',
+                            animation: status === 'speaking' ? 'glow-pulse 2s ease-in-out infinite' : 'none'
+                        }}>
+                            {status === 'listening' ? <Icon.Mic /> : <SpeakerHumanIcon size={50} color="#fff" />}
                         </div>
                     </div>
 
                     <div style={{ textAlign: 'center' }}>
                         <p style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 700, color: '#fff' }}>AmEx Intelligate</p>
-                        <p style={{ margin: 0, fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>AI Voice Agent · Speaking</p>
+                        <p style={{ margin: 0, fontSize: 12, color: status === 'speaking' ? '#4ADE80' : status === 'listening' ? '#38BDF8' : '#FBBF24', fontWeight: 500 }}>
+                            {status === 'speaking' && 'AI Voice Agent · Speaking'}
+                            {status === 'listening' && 'Listening to you… (Speak now)'}
+                            {status === 'thinking' && 'Analyzing policy & ledger…'}
+                        </p>
                     </div>
 
+                    {/* Audio Waveform Bars */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 2.5, height: 48, width: 220 }}>
                         {bars.map((h, i) => (
-                            <div key={i} className="voice-bar" style={{ flex: 1, height: `${h * 100}%`, background: 'rgba(74,222,128,0.7)', borderRadius: 3, '--dur': `${0.45 + (i % 4) * 0.12}s`, animationDelay: `${i * 0.06}s` }} />
+                            <div
+                                key={i}
+                                className={status === 'speaking' ? 'voice-bar' : ''}
+                                style={{
+                                    flex: 1,
+                                    height: status === 'speaking' ? `${h * 100}%` : status === 'listening' ? '28%' : '14%',
+                                    background: status === 'speaking' ? 'rgba(74,222,128,0.75)' : status === 'listening' ? 'rgba(56,189,248,0.6)' : 'rgba(255,255,255,0.2)',
+                                    borderRadius: 3,
+                                    '--dur': `${0.45 + (i % 4) * 0.12}s`,
+                                    animationDelay: `${i * 0.06}s`,
+                                    transition: 'height 0.2s, background 0.2s'
+                                }}
+                            />
                         ))}
                     </div>
 
-                    <button onClick={onEnd} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 22px', background: 'rgba(220,38,38,0.2)', border: '1.5px solid rgba(220,38,38,0.5)', borderRadius: 24, fontSize: 13, fontWeight: 600, color: '#FCA5A5', cursor: 'pointer' }}>
-                        <Icon.X /> End Call
-                    </button>
+                    {/* Voice Controls */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', maxWidth: 200 }}>
+                        {status === 'speaking' ? (
+                            <button
+                                onClick={handleInterrupt}
+                                style={{ padding: '9px 16px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 20, fontSize: 12, fontWeight: 600, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                                title="Interrupt assistant and speak"
+                            >
+                                <Icon.Mic /> Speak / Interrupt
+                            </button>
+                        ) : status === 'listening' ? (
+                            <button
+                                onClick={() => {
+                                    if (currentTranscript.trim()) handleUserSpeech(currentTranscript.trim());
+                                }}
+                                style={{ padding: '9px 16px', background: 'rgba(56,189,248,0.2)', border: '1px solid rgba(56,189,248,0.5)', borderRadius: 20, fontSize: 12, fontWeight: 600, color: '#38BDF8', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                            >
+                                <Icon.Mic /> {currentTranscript ? 'Send Voice →' : 'Listening…'}
+                            </button>
+                        ) : null}
+
+                        <button
+                            onClick={handleEndCall}
+                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 22px', background: 'rgba(220,38,38,0.2)', border: '1.5px solid rgba(220,38,38,0.5)', borderRadius: 24, fontSize: 13, fontWeight: 600, color: '#FCA5A5', cursor: 'pointer' }}
+                        >
+                            <Icon.X /> End Call
+                        </button>
+                    </div>
                 </div>
 
+                {/* Live Transcript Pane */}
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-                        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase' }}>Live Transcript — Saving to History</span>
+                    <div style={{ padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase' }}>Live Audio Transcript — Synced with Intelligate</span>
+                        <span style={{ fontSize: 11, color: '#38BDF8', background: 'rgba(56,189,248,0.1)', padding: '2px 8px', borderRadius: 4 }}>Web Speech API</span>
                     </div>
 
                     <div style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                        {VOICE_TRANSCRIPT.slice(0, visibleCount).map((msg, i) => (
+                        {messages.map((msg, i) => (
                             <div key={i} style={{ display: 'flex', justifyContent: msg.from === 'user' ? 'flex-end' : 'flex-start', animation: 'fade-in 0.35s ease' }}>
                                 {msg.from === 'agent' && (
                                     <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'rgba(1,111,208,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: 8, alignSelf: 'flex-end', flexShrink: 0 }}>
@@ -436,12 +762,22 @@ function VoiceCallView({ onEnd, card }) {
                                 </div>
                                 {msg.from === 'user' && (
                                     <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: 8, alignSelf: 'flex-end', flexShrink: 0 }}>
-                                        <span style={{ color: '#fff', fontSize: 10, fontWeight: 700 }}>RK</span>
+                                        <span style={{ color: '#fff', fontSize: 10, fontWeight: 700 }}>{currentUser?.avatar || 'ME'}</span>
                                     </div>
                                 )}
                             </div>
                         ))}
-                        {visibleCount < VOICE_TRANSCRIPT.length && (
+
+                        {/* Live speaking preview for user */}
+                        {currentTranscript && (
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', animation: 'fade-in 0.2s ease' }}>
+                                <div style={{ maxWidth: '70%', padding: '9px 13px', borderRadius: '16px 16px 4px 16px', background: 'rgba(1,111,208,0.35)', color: 'rgba(255,255,255,0.7)', fontSize: 13, border: '1px dashed rgba(56,189,248,0.5)', fontStyle: 'italic' }}>
+                                    {currentTranscript}…
+                                </div>
+                            </div>
+                        )}
+
+                        {status === 'thinking' && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                 <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'rgba(1,111,208,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                                     <span style={{ color: '#fff', fontSize: 9, fontWeight: 700 }}>AI</span>
@@ -455,7 +791,7 @@ function VoiceCallView({ onEnd, card }) {
                     </div>
 
                     <div style={{ padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,0.07)', fontSize: 11, color: 'rgba(255,255,255,0.3)', textAlign: 'center' }}>
-                        This transcript is being encrypted and saved to Conversation History · Audit ref will be generated on call end
+                        🔒 256-Bit Encrypted Voice Stream · Real-Time Multi-Agent Intelligate Routing
                     </div>
                 </div>
             </div>
@@ -463,9 +799,343 @@ function VoiceCallView({ onEnd, card }) {
     );
 }
 
+// ─── Screen 0: Authentic Card Member Sign In ──────────────────────────────────
+function ScreenLogin({ onLogin, availablePersonas = DEFAULT_PERSONAS }) {
+    const [userId, setUserId] = useState('');
+    const [password, setPassword] = useState('');
+    const [rememberMe, setRememberMe] = useState(false);
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const handleSubmit = (e) => {
+        e?.preventDefault();
+        const trimmed = userId.trim();
+        if (!trimmed) {
+            setError('Please enter your User ID or Member ID');
+            return;
+        }
+        setError('');
+        setLoading(true);
+
+        setTimeout(() => {
+            // Find matching card member
+            const matched = availablePersonas.find(
+                p => p.id?.toLowerCase() === trimmed.toLowerCase() ||
+                    p.email?.toLowerCase() === trimmed.toLowerCase() ||
+                    p.name?.toLowerCase().includes(trimmed.toLowerCase())
+            ) || {
+                id: trimmed,
+                name: trimmed.includes('@') ? trimmed.split('@')[0].toUpperCase() : trimmed.toUpperCase(),
+                email: trimmed.includes('@') ? trimmed : `${trimmed.toLowerCase()}@example.com`,
+                tier: 'Platinum',
+                credit_score: 790,
+                annual_spend: 65000,
+                member_since: 2022,
+                avatar: trimmed.slice(0, 2).toUpperCase(),
+                avatar_bg: 'linear-gradient(135deg,#016FD0,#0A1628)',
+            };
+
+            setLoading(false);
+            showToast(`Welcome back, ${matched.name}`, 'success');
+            onLogin(matched);
+        }, 250);
+    };
+
+    return (
+        <div style={{
+            minHeight: '100vh',
+            width: '100vw',
+            background: 'radial-gradient(ellipse at 50% 25%, #0B223D 0%, #06111F 60%, #02060D 100%)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            fontFamily: "'Inter',system-ui,sans-serif",
+            color: '#fff',
+            boxSizing: 'border-box',
+            position: 'relative',
+        }}>
+            {/* Ambient Background Glow */}
+            <div style={{ position: 'absolute', top: '15%', left: '50%', transform: 'translateX(-50%)', width: 520, height: 260, background: 'rgba(1,111,208,0.14)', filter: 'blur(120px)', pointerEvents: 'none' }} />
+
+            {/* Login Card */}
+            <div style={{
+                width: '100%',
+                maxWidth: 420,
+                background: 'rgba(10, 22, 40, 0.88)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+                borderRadius: 20,
+                boxShadow: '0 24px 70px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+                backdropFilter: 'blur(24px)',
+                padding: '38px 32px',
+                zIndex: 1,
+                boxSizing: 'border-box',
+            }}>
+                {/* Brand Header */}
+                <div style={{ textAlign: 'center', marginBottom: 28 }}>
+                    <div style={{ display: 'inline-flex', justifyContent: 'center', marginBottom: 14 }}>
+                        <AmexWordmark />
+                    </div>
+                    <h1 style={{ margin: '0 0 6px', fontSize: 21, fontWeight: 700, color: '#fff', letterSpacing: '-0.01em' }}>
+                        Card Member Sign In
+                    </h1>
+                    <p style={{ margin: 0, fontSize: 13, color: 'rgba(255, 255, 255, 0.5)' }}>
+                        Intelligate Autonomous Servicing
+                    </p>
+                </div>
+
+                {/* Error Banner */}
+                {error && (
+                    <div style={{ padding: '10px 14px', background: 'rgba(220,38,38,0.14)', border: '1px solid rgba(220,38,38,0.3)', borderRadius: 8, color: '#FCA5A5', fontSize: 12, marginBottom: 16 }}>
+                        {error}
+                    </div>
+                )}
+
+                {/* Single Member Sign In Form */}
+                <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    <div>
+                        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'rgba(255, 255, 255, 0.75)', marginBottom: 6 }}>
+                            User ID or Member ID
+                        </label>
+                        <input
+                            type="text"
+                            value={userId}
+                            onChange={e => setUserId(e.target.value)}
+                            placeholder="Enter your User ID"
+                            autoComplete="username"
+                            style={{
+                                width: '100%',
+                                padding: '12px 14px',
+                                borderRadius: 10,
+                                border: '1px solid rgba(255, 255, 255, 0.16)',
+                                background: 'rgba(255, 255, 255, 0.05)',
+                                color: '#fff',
+                                fontSize: 14,
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                                transition: 'border-color 0.15s',
+                            }}
+                            onFocus={e => (e.target.style.borderColor = 'var(--amex-blue)')}
+                            onBlur={e => (e.target.style.borderColor = 'rgba(255, 255, 255, 0.16)')}
+                        />
+                    </div>
+
+                    <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255, 255, 255, 0.75)' }}>
+                                Password
+                            </label>
+                            <span style={{ fontSize: 11, color: '#38BDF8', cursor: 'pointer' }}>
+                                Forgot Password?
+                            </span>
+                        </div>
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={e => setPassword(e.target.value)}
+                            placeholder="Password"
+                            autoComplete="current-password"
+                            style={{
+                                width: '100%',
+                                padding: '12px 14px',
+                                borderRadius: 10,
+                                border: '1px solid rgba(255, 255, 255, 0.16)',
+                                background: 'rgba(255, 255, 255, 0.05)',
+                                color: '#fff',
+                                fontSize: 14,
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                                transition: 'border-color 0.15s',
+                            }}
+                            onFocus={e => (e.target.style.borderColor = 'var(--amex-blue)')}
+                            onBlur={e => (e.target.style.borderColor = 'rgba(255, 255, 255, 0.16)')}
+                        />
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: 'rgba(255, 255, 255, 0.65)' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+                            <input
+                                type="checkbox"
+                                checked={rememberMe}
+                                onChange={e => setRememberMe(e.target.checked)}
+                                style={{ accentColor: '#016FD0', width: 14, height: 14, cursor: 'pointer' }}
+                            />
+                            Remember User ID
+                        </label>
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={loading}
+                        style={{
+                            marginTop: 6,
+                            padding: '13px 0',
+                            borderRadius: 10,
+                            border: 'none',
+                            background: 'var(--amex-blue)',
+                            color: '#fff',
+                            fontSize: 14,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            boxShadow: '0 4px 16px rgba(1, 111, 208, 0.35)',
+                            transition: 'all 0.15s',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 8,
+                        }}
+                    >
+                        {loading ? 'Signing In...' : 'Log In →'}
+                    </button>
+                </form>
+
+                {/* Quick Test ID Helper */}
+                <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid rgba(255, 255, 255, 0.08)', textAlign: 'center' }}>
+                    <p style={{ margin: '0 0 8px', fontSize: 11, color: 'rgba(255, 255, 255, 0.4)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Quick Demo IDs
+                    </p>
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        {availablePersonas.map(p => (
+                            <button
+                                key={p.id}
+                                type="button"
+                                onClick={() => {
+                                    setUserId(p.id);
+                                    setPassword('••••••••');
+                                    setError('');
+                                }}
+                                style={{
+                                    padding: '4px 10px',
+                                    borderRadius: 6,
+                                    border: `1px solid ${userId === p.id ? '#016FD0' : 'rgba(255, 255, 255, 0.1)'}`,
+                                    background: userId === p.id ? 'rgba(1, 111, 208, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                                    color: userId === p.id ? '#38BDF8' : 'rgba(255, 255, 255, 0.65)',
+                                    fontSize: 11,
+                                    cursor: 'pointer',
+                                    transition: 'all 0.15s',
+                                }}
+                            >
+                                {p.id}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Footer Security Note */}
+                <div style={{ marginTop: 18, textAlign: 'center', fontSize: 11, color: 'rgba(255, 255, 255, 0.35)' }}>
+                    🔒 256-Bit Encrypted · SHA-256 Chained Ledger
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Switch Persona Modal ─────────────────────────────────────────────────────
+function SwitchPersonaModal({ availablePersonas, currentPersona, onSelect, onClose, onSignOut }) {
+    return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,22,40,0.75)', backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'fade-in 0.2s ease' }} onClick={onClose}>
+            <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 20, padding: '28px', width: 560, maxWidth: '90vw', boxShadow: '0 24px 80px rgba(0,0,0,0.3)', animation: 'fade-in 0.25s ease' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <p style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--amex-navy)' }}>Switch Active Mock Persona</p>
+                    <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(10,22,40,0.4)', fontSize: 18 }}>✕</button>
+                </div>
+                <p style={{ margin: '0 0 20px', fontSize: 13, color: 'rgba(10,22,40,0.5)' }}>
+                    Switch card member context instantly to test policy rules and workflows:
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {availablePersonas.map(persona => {
+                        const isCurrent = currentPersona?.id === persona.id;
+                        return (
+                            <button
+                                key={persona.id}
+                                onClick={() => { onSelect(persona); onClose(); }}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    padding: '14px 16px',
+                                    borderRadius: 12,
+                                    border: `1.5px solid ${isCurrent ? 'var(--amex-blue)' : 'var(--border-subtle)'}`,
+                                    background: isCurrent ? 'rgba(1,111,208,0.06)' : '#fff',
+                                    cursor: 'pointer',
+                                    textAlign: 'left',
+                                    transition: 'all 0.15s',
+                                }}
+                            >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                                    <div style={{ width: 40, height: 40, borderRadius: '50%', background: persona.avatar_bg || 'var(--amex-navy)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                        <span style={{ color: '#fff', fontSize: 14, fontWeight: 700 }}>{persona.avatar || 'AM'}</span>
+                                    </div>
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--amex-navy)' }}>{persona.name}</p>
+                                            {isCurrent && <span style={{ fontSize: 10, fontWeight: 700, background: '#016FD0', color: '#fff', padding: '2px 8px', borderRadius: 10 }}>ACTIVE</span>}
+                                        </div>
+                                        <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(10,22,40,0.5)' }}>
+                                            {persona.id} · Score: {persona.credit_score} · {persona.persona_tag ? persona.persona_tag.split('(')[0].trim() : 'Active Member'}
+                                        </p>
+                                    </div>
+                                </div>
+                                <span style={{ fontSize: 12, color: 'var(--amex-blue)', fontWeight: 600 }}>Switch →</span>
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+                    <button
+                        onClick={onSignOut}
+                        style={{ flex: 1, padding: '11px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#DC2626', cursor: 'pointer' }}
+                    >
+                        Sign Out to Login Portal
+                    </button>
+                    <button
+                        onClick={onClose}
+                        style={{ padding: '11px 20px', background: 'var(--surface)', border: '1px solid var(--border-subtle)', borderRadius: 10, fontSize: 13, color: 'rgba(10,22,40,0.6)', cursor: 'pointer' }}
+                    >
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ─── Screen 1: Landing ────────────────────────────────────────────────────────
-function ScreenLanding({ onStartChat, activeCard, onCardClick }) {
+function ScreenLanding({ onStartChat, activeCard, onCardClick, currentUser }) {
     const [inputVal, setInputVal] = useState('');
+    const [isListening, setIsListening] = useState(false);
+    const recognizerRef = useRef(null);
+
+    const card = activeCard || DEFAULT_CARDS[0];
+
+    const toggleListening = () => {
+        if (isListening) {
+            recognizerRef.current?.stop();
+            setIsListening(false);
+            return;
+        }
+
+        stopSpeech();
+        const recognizer = createSpeechRecognizer({
+            onResult: (text, isFinal) => {
+                setInputVal(text);
+                if (isFinal) {
+                    setIsListening(false);
+                }
+            },
+            onEnd: () => setIsListening(false),
+            onError: () => setIsListening(false)
+        });
+
+        if (recognizer) {
+            recognizerRef.current = recognizer;
+            recognizer.start();
+            setIsListening(true);
+        }
+    };
 
     const handleSubmit = (e) => {
         e?.preventDefault();
@@ -477,7 +1147,7 @@ function ScreenLanding({ onStartChat, activeCard, onCardClick }) {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '0 40px' }}>
             <div style={{ marginBottom: 28 }}>
-                <PhysicalCard card={activeCard} />
+                <PhysicalCard card={card} holderName={currentUser?.name} />
             </div>
 
             <div style={{ marginBottom: 28, textAlign: 'center' }}>
@@ -486,11 +1156,11 @@ function ScreenLanding({ onStartChat, activeCard, onCardClick }) {
                 </p>
                 <h1 style={{ fontSize: 32, fontWeight: 300, color: 'var(--amex-navy)', margin: '0 0 8px', lineHeight: 1.2, letterSpacing: '-0.02em' }}>
                     How can I help you today,<br />
-                    <span style={{ fontWeight: 700 }}>Riya?</span>
+                    <span style={{ fontWeight: 700 }}>{currentUser?.name ? currentUser.name.split(' ')[0] : 'Member'}?</span>
                 </h1>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}>
-                    <div style={{ width: 16, height: 10, borderRadius: 2, background: `linear-gradient(135deg,${activeCard.color[0]},${activeCard.color[1]})` }} />
-                    <span style={{ fontSize: 13, color: 'rgba(10,22,40,0.5)' }}>{activeCard.name} •••• {activeCard.last4}</span>
+                    <div style={{ width: 16, height: 10, borderRadius: 2, background: `linear-gradient(135deg,${card.color?.[0] || '#016FD0'},${card.color?.[1] || '#003D8F'})` }} />
+                    <span style={{ fontSize: 13, color: 'rgba(10,22,40,0.5)' }}>{card.name} •••• {card.last4}</span>
                     <button onClick={onCardClick} style={{ fontSize: 11, color: '#016FD0', fontWeight: 600, background: 'rgba(1,111,208,0.08)', border: 'none', cursor: 'pointer', padding: '2px 8px', borderRadius: 4 }}>
                         Switch Card
                     </button>
@@ -503,13 +1173,36 @@ function ScreenLanding({ onStartChat, activeCard, onCardClick }) {
                         value={inputVal}
                         onChange={e => setInputVal(e.target.value)}
                         placeholder="Ask me anything about this card…"
-                        style={{ width: '100%', padding: '16px 52px 16px 20px', border: '1.5px solid var(--border-subtle)', borderRadius: 14, fontSize: 15, outline: 'none', background: '#fff', boxShadow: '0 4px 24px rgba(1,111,208,0.08)', color: 'var(--amex-navy)' }}
+                        style={{ width: '100%', padding: '16px 88px 16px 20px', border: '1.5px solid var(--border-subtle)', borderRadius: 14, fontSize: 15, outline: 'none', background: '#fff', boxShadow: '0 4px 24px rgba(1,111,208,0.08)', color: 'var(--amex-navy)' }}
                         onFocus={e => (e.target.style.borderColor = 'var(--amex-blue)')}
                         onBlur={e => (e.target.style.borderColor = 'var(--border-subtle)')}
                     />
-                    <button type="submit" style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--amex-blue)', padding: 4 }}>
-                        <Icon.Send />
-                    </button>
+                    <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <button
+                            type="button"
+                            onClick={toggleListening}
+                            style={{
+                                background: isListening ? '#EF4444' : 'transparent',
+                                border: 'none',
+                                borderRadius: '50%',
+                                width: 32,
+                                height: 32,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: isListening ? '#fff' : 'rgba(10,22,40,0.5)',
+                                transition: 'all 0.15s',
+                                boxShadow: isListening ? '0 0 12px rgba(239,68,68,0.5)' : 'none'
+                            }}
+                            title={isListening ? "Listening... click to stop" : "Speak your message"}
+                        >
+                            <Icon.Mic />
+                        </button>
+                        <button type="submit" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--amex-blue)', padding: 4 }}>
+                            <Icon.Send />
+                        </button>
+                    </div>
                 </form>
             </div>
 
@@ -539,19 +1232,89 @@ function ScreenLanding({ onStartChat, activeCard, onCardClick }) {
 }
 
 // ─── Screen 2: Unified Live Chat Screen (No Duplicate Text Bug) ───────────────
-function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwitch, onCardUpdated }) {
+function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwitch, onCardUpdated, currentUser }) {
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [pendingAuth, setPendingAuth] = useState(false);
+    const [isListening, setIsListening] = useState(false);
+    const [speakingMsgId, setSpeakingMsgId] = useState(null);
+    const recognizerRef = useRef(null);
     const endRef = useRef(null);
+
+    const toggleListening = () => {
+        if (isListening) {
+            recognizerRef.current?.stop();
+            setIsListening(false);
+            return;
+        }
+
+        stopSpeech();
+        setSpeakingMsgId(null);
+        const recognizer = createSpeechRecognizer({
+            onResult: (text, isFinal) => {
+                setInput(text);
+                if (isFinal) {
+                    setIsListening(false);
+                }
+            },
+            onEnd: () => setIsListening(false),
+            onError: () => setIsListening(false)
+        });
+
+        if (recognizer) {
+            recognizerRef.current = recognizer;
+            recognizer.start();
+            setIsListening(true);
+        }
+    };
+
+    const handleToggleSpeak = (msgId, text) => {
+        if (speakingMsgId === msgId) {
+            stopSpeech();
+            setSpeakingMsgId(null);
+            return;
+        }
+        setSpeakingMsgId(msgId);
+        speakAmexVoice(text, {
+            onEnd: () => setSpeakingMsgId(null)
+        });
+    };
 
     // Guard against React.StrictMode double firing initialPrompt
     const sentPromptRef = useRef(null);
+    const prevCardRef = useRef(card?.id);
+    const prevUserRef = useRef(currentUser?.id);
 
     useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, loading, pendingAuth]);
+
+    // Handle switching cards in active chat
+    useEffect(() => {
+        if (prevCardRef.current && card?.id && prevCardRef.current !== card.id) {
+            showToast(`Card context switched to ${card.name} (•••• ${card.last4})`, 'info');
+            setMessages(prev => [
+                ...prev,
+                {
+                    id: `sys_card_${Date.now()}`,
+                    from: 'system',
+                    text: `Switched active servicing context to ${card.name} (•••• ${card.last4})`
+                }
+            ]);
+        }
+        prevCardRef.current = card?.id;
+    }, [card?.id, card?.name, card?.last4]);
+
+    // Handle switching user/persona in active chat
+    useEffect(() => {
+        if (prevUserRef.current && currentUser?.id && prevUserRef.current !== currentUser.id) {
+            setMessages([]);
+            setPendingAuth(false);
+            sentPromptRef.current = null;
+        }
+        prevUserRef.current = currentUser?.id;
+    }, [currentUser?.id]);
 
     const handleSend = async (queryText) => {
         const text = (queryText || input).trim();
@@ -564,7 +1327,7 @@ function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwit
         setLoading(true);
 
         try {
-            const data = await sendChatMessage(text, card.id);
+            const data = await sendChatMessage(text, card.id, currentUser?.id || 'RKA-00-8821');
             setLoading(false);
 
             const agentMsg = {
@@ -581,6 +1344,15 @@ function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwit
 
             if (data.requires_auth) {
                 setPendingAuth(true);
+                showToast('Authentication Required: Enter Card Details & OTP', 'info');
+            }
+
+            if (data.recommend_voice) {
+                showToast('Card Locked Immediately · Voice Switch Recommended', 'warning');
+            }
+
+            if (data.is_escalated) {
+                showToast(`Request Escalated to Human Underwriter (${data.sr_number})`, 'info');
             }
         } catch (err) {
             setLoading(false);
@@ -588,6 +1360,7 @@ function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwit
                 ...prev,
                 { id: `err_${Date.now()}`, from: 'agent', text: `Backend connection error: ${err.message}. Ensure Uvicorn server is running.` }
             ]);
+            showToast(`API Error: ${err.message}`, 'error');
         }
     };
 
@@ -601,7 +1374,7 @@ function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwit
 
     const handleOtpComplete = async (otpCode) => {
         try {
-            const res = await verifyOtpAndResume(otpCode, card.id);
+            const res = await verifyOtpAndResume(otpCode, card.id, currentUser?.id || 'RKA-00-8821');
             setPendingAuth(false);
             setMessages(prev => [
                 ...prev,
@@ -613,11 +1386,12 @@ function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwit
                     auditHash: res.audit_hash,
                 }
             ]);
+            showToast('Identity Verified! New Limit active & sealed in ledger.', 'success');
             if (onCardUpdated) {
                 onCardUpdated();
             }
         } catch (err) {
-            alert(`OTP verification failed: ${err.message}`);
+            showToast(`OTP verification failed: ${err.message}`, 'error');
         }
     };
 
@@ -639,33 +1413,68 @@ function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwit
 
                 {messages.map(msg => (
                     <div key={msg.id}>
-                        <ChatBubble from={msg.from}>
-                            {msg.from === 'agent' && msg.recommendVoice && (
-                                <div style={{ marginBottom: 10 }}>
-                                    <span style={{ background: '#FEF2F2', color: '#DC2626', padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600 }}>Card Locked</span>
-                                </div>
-                            )}
-                            <div>{msg.text}</div>
+                        {msg.from === 'system' ? (
+                            <div style={{ display: 'flex', justifyContent: 'center', margin: '6px 0' }}>
+                                <span style={{ fontSize: 11, color: 'rgba(10,22,40,0.55)', background: 'rgba(1,111,208,0.06)', border: '1px solid rgba(1,111,208,0.12)', padding: '4px 12px', borderRadius: 20, fontWeight: 500 }}>
+                                    ℹ️ {msg.text}
+                                </span>
+                            </div>
+                        ) : (
+                            <ChatBubble from={msg.from}>
+                                {msg.from === 'agent' && msg.recommendVoice && (
+                                    <div style={{ marginBottom: 10 }}>
+                                        <span style={{ background: '#FEF2F2', color: '#DC2626', padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600 }}>Card Locked</span>
+                                    </div>
+                                )}
+                                <div>{msg.text}</div>
 
-                            {msg.auditId && (
-                                <AuditBadge
-                                    id={msg.auditId}
-                                    hash={msg.auditHash}
-                                    onView={() => onAudit && onAudit(msg.auditId)}
-                                />
-                            )}
+                                {msg.from === 'agent' && (
+                                    <div style={{ marginTop: 6, display: 'flex', alignItems: 'center' }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleToggleSpeak(msg.id, msg.text)}
+                                            style={{
+                                                background: speakingMsgId === msg.id ? 'rgba(1,111,208,0.12)' : 'rgba(0,0,0,0.04)',
+                                                border: 'none',
+                                                borderRadius: 6,
+                                                padding: '3px 8px',
+                                                cursor: 'pointer',
+                                                fontSize: 11,
+                                                fontWeight: 600,
+                                                color: speakingMsgId === msg.id ? 'var(--amex-blue)' : 'rgba(10,22,40,0.5)',
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: 4,
+                                                transition: 'all 0.15s'
+                                            }}
+                                            title={speakingMsgId === msg.id ? "Stop voice" : "Listen to response"}
+                                        >
+                                            <SpeakerHumanIcon size={12} color={speakingMsgId === msg.id ? '#016FD0' : 'rgba(10,22,40,0.5)'} />
+                                            <span>{speakingMsgId === msg.id ? 'Speaking…' : 'Listen'}</span>
+                                        </button>
+                                    </div>
+                                )}
 
-                            {msg.recommendVoice && (
-                                <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-                                    <button
-                                        onClick={onVoiceSwitch}
-                                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px', background: 'var(--amex-blue)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-                                    >
-                                        <Icon.Phone /> Switch to Voice Call
-                                    </button>
-                                </div>
-                            )}
-                        </ChatBubble>
+                                {msg.auditId && (
+                                    <AuditBadge
+                                        id={msg.auditId}
+                                        hash={msg.auditHash}
+                                        onView={() => onAudit && onAudit(msg.auditId)}
+                                    />
+                                )}
+
+                                {msg.recommendVoice && (
+                                    <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                                        <button
+                                            onClick={onVoiceSwitch}
+                                            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px', background: 'var(--amex-blue)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+                                        >
+                                            <Icon.Phone /> Switch to Voice Call
+                                        </button>
+                                    </div>
+                                )}
+                            </ChatBubble>
+                        )}
                     </div>
                 ))}
 
@@ -695,6 +1504,25 @@ function ScreenLiveChat({ initialPrompt, card, onCardClick, onAudit, onVoiceSwit
                         onFocus={e => (e.target.style.borderColor = 'var(--amex-blue)')}
                         onBlur={e => (e.target.style.borderColor = 'var(--border-subtle)')}
                     />
+                    <button
+                        type="button"
+                        onClick={toggleListening}
+                        style={{
+                            width: 40, height: 40,
+                            background: isListening ? '#EF4444' : 'var(--surface)',
+                            border: '1.5px solid var(--border-subtle)',
+                            borderRadius: 10,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            cursor: 'pointer',
+                            color: isListening ? '#fff' : 'rgba(10,22,40,0.6)',
+                            flexShrink: 0,
+                            transition: 'all 0.15s',
+                            boxShadow: isListening ? '0 0 12px rgba(239,68,68,0.5)' : 'none'
+                        }}
+                        title={isListening ? "Listening... click to stop" : "Speak your message"}
+                    >
+                        <Icon.Mic />
+                    </button>
                     <button
                         type="submit"
                         disabled={loading || !input.trim()}
@@ -948,19 +1776,62 @@ function ScreenAudit({ highlightId }) {
 }
 
 // ─── Screen 6: Escalation (Original 2-Column Agent Layout + Dynamic Tickets) ──
-function ScreenEscalation({ cards }) {
+function ScreenEscalation({ cards, currentUser, onRefreshCards }) {
     const [expanded, setExpanded] = useState(false);
     const [liveEscalations, setLiveEscalations] = useState([]);
+    const [resolving, setResolving] = useState(false);
 
-    useEffect(() => {
+    const refreshTickets = () => {
         fetchEscalations()
             .then(data => {
                 if (Array.isArray(data)) setLiveEscalations(data);
             })
             .catch(() => { });
+    };
+
+    useEffect(() => {
+        refreshTickets();
     }, []);
 
     const latestTicket = liveEscalations.length > 0 ? liveEscalations[0] : null;
+
+    const handleApprove = async () => {
+        if (!latestTicket) {
+            showToast('No active escalation ticket to approve', 'warning');
+            return;
+        }
+        setResolving(true);
+        try {
+            await resolveEscalation(latestTicket.sr_number, 'APPROVE', 25000.0);
+            showToast(`Ticket ${latestTicket.sr_number} approved! Limit adjusted to $25,000.`, 'success');
+            refreshTickets();
+            if (onRefreshCards) onRefreshCards();
+        } catch (err) {
+            showToast(`Approval failed: ${err.message}`, 'error');
+        } finally {
+            setResolving(false);
+        }
+    };
+
+    const handleReview = async () => {
+        if (!latestTicket) {
+            showToast('No active escalation ticket', 'warning');
+            return;
+        }
+        setResolving(true);
+        try {
+            await markEscalationInReview(latestTicket.sr_number);
+            showToast(`Ticket ${latestTicket.sr_number} assigned to underwriter review queue.`, 'info');
+            refreshTickets();
+        } catch (err) {
+            showToast(`Review failed: ${err.message}`, 'error');
+        } finally {
+            setResolving(false);
+        }
+    };
+
+    const isApproved = latestTicket?.status === 'APPROVED';
+    const isUnderReview = latestTicket?.status === 'UNDER_REVIEW';
 
     return (
         <div style={{ height: '100%', overflowY: 'auto', padding: '24px', background: 'var(--surface)' }}>
@@ -976,21 +1847,21 @@ function ScreenEscalation({ cards }) {
                 {/* Left Column: Member Info */}
                 <div style={{ background: '#fff', borderRadius: 14, border: '1px solid var(--border-subtle)', padding: '20px', alignSelf: 'start' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, paddingBottom: 16, borderBottom: '1px solid var(--border-subtle)' }}>
-                        <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'linear-gradient(135deg,#016FD0,#0A1628)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <span style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>RK</span>
+                        <div style={{ width: 48, height: 48, borderRadius: '50%', background: currentUser?.avatar_bg || 'linear-gradient(135deg,#016FD0,#0A1628)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <span style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>{currentUser?.avatar || 'AM'}</span>
                         </div>
                         <div>
-                            <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: 'var(--amex-navy)' }}>Riya Kapoor</p>
-                            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(10,22,40,0.45)' }}>ID: RKA-00-8821</p>
+                            <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: 'var(--amex-navy)' }}>{currentUser?.name || 'Riya Kapoor'}</p>
+                            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(10,22,40,0.45)' }}>ID: {currentUser?.id || 'RKA-00-8821'}</p>
                         </div>
                     </div>
 
                     {[
-                        ['Tier', 'Platinum'],
-                        ['Member Since', '2019 · 6 years'],
-                        ['Cards Held', '3 Active'],
-                        ['Credit Score', '812 (Excellent)'],
-                        ['Annual Spend', '$94,200'],
+                        ['Tier', currentUser?.tier || 'Platinum'],
+                        ['Member Since', `${currentUser?.member_since || 2019} · Member`],
+                        ['Cards Held', `${cards?.length || 1} Active`],
+                        ['Credit Score', `${currentUser?.credit_score || 812} (Excellent)`],
+                        ['Annual Spend', `$${(currentUser?.annual_spend || 94200).toLocaleString()}`],
                         ['Auth Status', 'OTP Verified ✓']
                     ].map(([k, v]) => (
                         <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid rgba(10,22,40,0.06)', fontSize: 12 }}>
@@ -1010,20 +1881,27 @@ function ScreenEscalation({ cards }) {
 
                 {/* Right Column: Escalation Details */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    <div style={{ background: '#fff', borderRadius: 14, border: '1.5px solid rgba(220,38,38,0.2)', padding: '20px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#DC2626' }} />
-                            <p style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', color: '#DC2626', textTransform: 'uppercase' }}>
-                                Escalation Context Summary {latestTicket ? `(${latestTicket.sr_number})` : ''}
-                            </p>
+                    <div style={{ background: '#fff', borderRadius: 14, border: `1.5px solid ${isApproved ? '#10B981' : isUnderReview ? '#F59E0B' : 'rgba(220,38,38,0.2)'}`, padding: '20px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <div style={{ width: 8, height: 8, borderRadius: '50%', background: isApproved ? '#10B981' : isUnderReview ? '#F59E0B' : '#DC2626' }} />
+                                <p style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', color: isApproved ? '#10B981' : isUnderReview ? '#D97706' : '#DC2626', textTransform: 'uppercase' }}>
+                                    Escalation Context Summary {latestTicket ? `(${latestTicket.sr_number})` : ''}
+                                </p>
+                            </div>
+                            {latestTicket?.status && (
+                                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 12, background: isApproved ? '#ECFDF5' : isUnderReview ? '#FEF3C7' : '#FEF2F2', color: isApproved ? '#059669' : isUnderReview ? '#D97706' : '#DC2626' }}>
+                                    {latestTicket.status}
+                                </span>
+                            )}
                         </div>
 
                         {[
-                            ['Intent', latestTicket ? latestTicket.category : 'Credit Limit Increase'],
-                            ['Requested Amount', latestTicket ? (latestTicket.category.includes('LIMIT') ? '$50,000' : 'Special Processing') : '$50,000'],
-                            ['Card', 'Platinum •••• 8234'],
-                            ['System Action Taken', 'Denied & Handed to Underwriting'],
-                            ['Reason', latestTicket ? latestTicket.root_cause : 'Requested amount exceeds maximum automated confidence threshold ($10,000)'],
+                            ['Intent', latestTicket ? (latestTicket.intent || latestTicket.category) : 'Credit Limit Increase'],
+                            ['Requested Amount', latestTicket ? (String(latestTicket.intent || '').includes('LIMIT') ? '$50,000' : 'Special Processing') : '$50,000'],
+                            ['Target Card', cards?.[0] ? `${cards[0].name} •••• ${cards[0].last4}` : 'Platinum •••• 8234'],
+                            ['System Action Taken', latestTicket?.status === 'APPROVED' ? 'Approved by Senior Underwriter' : 'Denied & Handed to Underwriting'],
+                            ['Reason', latestTicket ? (latestTicket.reason || latestTicket.root_cause) : 'Requested amount exceeds maximum automated confidence threshold ($10,000)'],
                             ['Customer Sentiment', latestTicket ? latestTicket.customer_sentiment : 'High Priority — Expressed Urgency'],
                             ['Estimated TAT', latestTicket ? `${latestTicket.estimated_tat_hours} Hours` : '4 Hours'],
                         ].map(([k, v]) => (
@@ -1043,19 +1921,48 @@ function ScreenEscalation({ cards }) {
                         </button>
                         {expanded && (
                             <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                                <ChatBubble from="user">I need to increase my credit limit to $50,000 for emergency medical bills tomorrow.</ChatBubble>
-                                <ChatBubble from="agent">Your Platinum tier allows automated increases up to $10,000. A $50,000 increase requires manual review. Escalating to a human underwriter now.</ChatBubble>
-                                <ChatBubble from="user">Why can't you just do it? I have an 812 credit score and never missed a payment.</ChatBubble>
+                                <ChatBubble from="user">I demand you raise my credit limit to $50,000 right now for urgent expenses.</ChatBubble>
+                                <ChatBubble from="agent">Your tier allows automated increases up to $10,000. A $50,000 request requires manual underwriter review. Escalating to a senior specialist now.</ChatBubble>
+                                <ChatBubble from="user">I have an excellent credit score and never missed a payment.</ChatBubble>
                             </div>
                         )}
                     </div>
 
                     <div style={{ background: '#fff', borderRadius: 14, border: '1px solid var(--border-subtle)', padding: '20px' }}>
-                        <p style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 600, color: 'rgba(10,22,40,0.4)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Recommended Actions</p>
+                        <p style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 600, color: 'rgba(10,22,40,0.4)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Underwriter Actions</p>
                         <div style={{ display: 'flex', gap: 10 }}>
-                            <button onClick={() => alert('Manual approval dispatched to core card ledger.')} style={{ flex: 1, padding: '10px', background: 'var(--amex-blue)', color: '#fff', border: 'none', borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Approve Manual Increase</button>
-                            <button onClick={() => alert('Credit review dossier sent to Risk Analytics.')} style={{ flex: 1, padding: '10px', background: '#fff', color: 'var(--amex-navy)', border: '1.5px solid var(--border-subtle)', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}>Request Credit Review</button>
-                            <button onClick={() => alert('Ticket forwarded to Supervisor queue.')} style={{ padding: '10px 16px', background: '#FEF2F2', color: '#DC2626', border: '1.5px solid #FECACA', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}>Escalate</button>
+                            <button
+                                disabled={resolving || isApproved}
+                                onClick={handleApprove}
+                                style={{
+                                    flex: 1, padding: '11px',
+                                    background: isApproved ? '#059669' : 'var(--amex-blue)',
+                                    color: '#fff', border: 'none', borderRadius: 10,
+                                    fontSize: 13, fontWeight: 600, cursor: isApproved ? 'default' : 'pointer',
+                                    opacity: resolving ? 0.7 : 1
+                                }}
+                            >
+                                {isApproved ? '✓ Approved ($25,000 Limit Active)' : 'Approve Manual Increase ($25k)'}
+                            </button>
+                            <button
+                                disabled={resolving || isApproved}
+                                onClick={handleReview}
+                                style={{
+                                    flex: 1, padding: '11px',
+                                    background: '#fff', color: 'var(--amex-navy)',
+                                    border: '1.5px solid var(--border-subtle)', borderRadius: 10,
+                                    fontSize: 13, cursor: isApproved ? 'default' : 'pointer',
+                                    opacity: isApproved ? 0.5 : 1
+                                }}
+                            >
+                                {isUnderReview ? 'Under Review ⏳' : 'Request Credit Review'}
+                            </button>
+                            <button
+                                onClick={() => showToast('Ticket forwarded to Senior Risk Supervisor queue', 'info')}
+                                style={{ padding: '11px 16px', background: '#FEF2F2', color: '#DC2626', border: '1.5px solid #FECACA', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}
+                            >
+                                Escalate
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1087,7 +1994,7 @@ function PreferenceToggle({ label, defaultEnabled }) {
     );
 }
 
-function ScreenProfile({ cards }) {
+function ScreenProfile({ cards, currentUser, onSignOut }) {
     const [editField, setEditField] = useState(null);
     const totalBalance = cards.reduce((s, c) => s + c.balance, 0);
     const totalLimit = cards.reduce((s, c) => s + c.limit, 0);
@@ -1097,22 +2004,30 @@ function ScreenProfile({ cards }) {
             <div style={{ background: 'linear-gradient(135deg,var(--amex-navy) 0%,#1A3A5C 100%)', padding: '32px 32px 28px', position: 'relative', overflow: 'hidden' }}>
                 <div style={{ position: 'absolute', top: -40, right: -60, width: 260, height: 260, borderRadius: '50%', background: 'rgba(1,111,208,0.12)', pointerEvents: 'none' }} />
                 <div style={{ position: 'absolute', top: 20, right: 100, width: 120, height: 120, borderRadius: '50%', background: 'rgba(1,111,208,0.08)', pointerEvents: 'none' }} />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 20, position: 'relative' }}>
-                    <div style={{ width: 72, height: 72, borderRadius: '50%', background: 'linear-gradient(135deg,#016FD0,#0057A8)', border: '3px solid rgba(255,255,255,0.18)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <span style={{ color: '#fff', fontSize: 24, fontWeight: 700 }}>RK</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 20, position: 'relative', flexWrap: 'wrap' }}>
+                    <div style={{ width: 72, height: 72, borderRadius: '50%', background: currentUser?.avatar_bg || 'linear-gradient(135deg,#016FD0,#0057A8)', border: '3px solid rgba(255,255,255,0.18)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <span style={{ color: '#fff', fontSize: 24, fontWeight: 700 }}>{currentUser?.avatar || 'AM'}</span>
                     </div>
                     <div>
-                        <p style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#fff' }}>Riya Kapoor</p>
-                        <p style={{ margin: '4px 0 0', fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>Member ID: RKA-00-8821 · Member Since 2019</p>
+                        <p style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#fff' }}>{currentUser?.name || 'Riya Kapoor'}</p>
+                        <p style={{ margin: '4px 0 0', fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>Member ID: {currentUser?.id || 'RKA-00-8821'} · Member Since {currentUser?.member_since || 2019}</p>
                         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                            <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(201,168,76,0.25)', color: '#C9A84C', border: '1px solid rgba(201,168,76,0.3)' }}>PLATINUM MEMBER</span>
-                            <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.65)' }}>3 ACTIVE CARDS</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(201,168,76,0.25)', color: '#C9A84C', border: '1px solid rgba(201,168,76,0.3)' }}>{(currentUser?.tier || 'PLATINUM').toUpperCase()} MEMBER</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.65)' }}>{cards.length} ACTIVE {cards.length === 1 ? 'CARD' : 'CARDS'}</span>
                         </div>
                     </div>
-                    <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-                        <p style={{ margin: 0, fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.08em' }}>CREDIT SCORE</p>
-                        <p style={{ margin: '4px 0 0', fontSize: 30, fontWeight: 700, color: '#4ADE80' }}>812</p>
-                        <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>Excellent</p>
+                    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 24 }}>
+                        <div style={{ textAlign: 'right' }}>
+                            <p style={{ margin: 0, fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.08em' }}>CREDIT SCORE</p>
+                            <p style={{ margin: '4px 0 0', fontSize: 30, fontWeight: 700, color: (currentUser?.credit_score || 812) >= 800 ? '#4ADE80' : '#FBBF24' }}>{currentUser?.credit_score || 812}</p>
+                            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>{(currentUser?.credit_score || 812) >= 800 ? 'Excellent' : 'Very Good'}</p>
+                        </div>
+                        <button
+                            onClick={onSignOut}
+                            style={{ padding: '9px 18px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 10, color: '#FCA5A5', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, backdropFilter: 'blur(8px)' }}
+                        >
+                            Sign Out
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1121,9 +2036,9 @@ function ScreenProfile({ cards }) {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 22 }}>
                     {[
                         { label: 'Total Balance', value: `$${totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}`, sub: `of $${totalLimit.toLocaleString()} limit` },
-                        { label: 'Annual Spend', value: '$94,200', sub: 'YTD 2025' },
-                        { label: 'Reward Points', value: '284,500', sub: '≈ $2,845 value' },
-                        { label: 'Waivers Left', value: '0 / 1', sub: 'Next: Sep 12' },
+                        { label: 'Annual Spend', value: `$${(currentUser?.annual_spend || 94200).toLocaleString()}`, sub: 'YTD 2026' },
+                        { label: 'Reward Points', value: (currentUser?.credit_score || 800) > 800 ? '284,500' : '96,200', sub: 'Membership Rewards®' },
+                        { label: 'Waiver Policy', value: currentUser?.id === 'MVA-01-4419' ? 'Eligible' : 'Cooldown', sub: currentUser?.id === 'MVA-01-4419' ? 'Last waiver >90d' : 'Next waiver in Nov' },
                     ].map(s => (
                         <div key={s.label} style={{ background: '#fff', borderRadius: 14, border: '1px solid var(--border-subtle)', padding: '16px 18px', boxShadow: '0 2px 10px rgba(0,0,0,0.04)' }}>
                             <p style={{ margin: '0 0 6px', fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', color: 'rgba(10,22,40,0.4)', textTransform: 'uppercase' }}>{s.label}</p>
@@ -1137,11 +2052,11 @@ function ScreenProfile({ cards }) {
                     <div style={{ background: '#fff', borderRadius: 16, border: '1px solid var(--border-subtle)', padding: '22px' }}>
                         <p style={{ margin: '0 0 16px', fontSize: 13, fontWeight: 700, color: 'var(--amex-navy)' }}>Personal Information</p>
                         {[
-                            { label: 'Full Name', value: 'Riya Kapoor', key: 'name' },
-                            { label: 'Email', value: 'riya.kapoor@gmail.com', key: 'email' },
-                            { label: 'Phone', value: '+1 (917) 555-8234', key: 'phone' },
+                            { label: 'Full Name', value: currentUser?.name || 'Riya Kapoor', key: 'name' },
+                            { label: 'Email', value: currentUser?.email || 'riya.kapoor@gmail.com', key: 'email' },
+                            { label: 'Phone', value: currentUser?.phone || '+1 (917) 555-8234', key: 'phone' },
                             { label: 'Address', value: '142 Park Ave, New York, NY 10017', key: 'address' },
-                            { label: 'Date of Birth', value: 'April 14, 1990', key: 'dob' },
+                            { label: 'Member Since', value: `${currentUser?.member_since || 2019}`, key: 'since' },
                             { label: 'Nationality', value: 'United States', key: 'nat' }
                         ].map(f => (
                             <div key={f.key} style={{ padding: '10px 0', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1415,7 +2330,7 @@ function ScreenHistory() {
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
-function Sidebar({ screen, setScreen, collapsed, setCollapsed }) {
+function Sidebar({ screen, setScreen, collapsed, setCollapsed, currentUser }) {
     const nav = [
         { id: 'landing', label: 'New Conversation', icon: <Icon.NewChat /> },
         { id: 'history', label: 'Conversation History', icon: <Icon.History /> },
@@ -1488,11 +2403,12 @@ function Sidebar({ screen, setScreen, collapsed, setCollapsed }) {
                     style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', width: '100%', background: 'none', border: 'none', cursor: 'pointer', borderRadius: 8, overflow: 'hidden', whiteSpace: 'nowrap' }}
                     onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.07)')}
                     onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                    title={`${currentUser?.name || 'Member'} Profile`}
                 >
-                    <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'linear-gradient(135deg,#016FD0,#0057A8)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <span style={{ color: '#fff', fontSize: 11, fontWeight: 700 }}>RK</span>
+                    <div style={{ width: 30, height: 30, borderRadius: '50%', background: currentUser?.avatar_bg || 'linear-gradient(135deg,#016FD0,#0057A8)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <span style={{ color: '#fff', fontSize: 11, fontWeight: 700 }}>{currentUser?.avatar || 'RK'}</span>
                     </div>
-                    {!collapsed && <span style={{ fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.75)' }}>Riya Kapoor</span>}
+                    {!collapsed && <span style={{ fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.75)' }}>{currentUser?.name || 'Riya Kapoor'}</span>}
                 </button>
                 <button
                     onClick={() => setCollapsed(!collapsed)}
@@ -1507,7 +2423,7 @@ function Sidebar({ screen, setScreen, collapsed, setCollapsed }) {
 
 // ─── Main Application Container ───────────────────────────────────────────────
 export default function App() {
-    const [screen, setScreen] = useState('landing');
+    const [screen, setScreen] = useState('profile');
     const [collapsed, setCollapsed] = useState(false);
     const [voiceMode, setVoiceMode] = useState(false);
     const [auditHighlight, setAuditHighlight] = useState();
@@ -1515,19 +2431,67 @@ export default function App() {
     const [activeCard, setActiveCard] = useState(DEFAULT_CARDS[0]);
     const [showCardSel, setShowCardSel] = useState(false);
     const [chatPrompt, setChatPrompt] = useState(null);
+    const [toasts, setToasts] = useState([]);
+    const [personas, setPersonas] = useState(DEFAULT_PERSONAS);
 
-    // Refresh cards from backend database
-    const refreshCards = () => {
-        fetchCards()
+    const [currentUser, setCurrentUser] = useState(() => {
+        try {
+            const saved = localStorage.getItem('amex_current_user');
+            return saved ? JSON.parse(saved) : DEFAULT_PERSONAS[0];
+        } catch {
+            return DEFAULT_PERSONAS[0];
+        }
+    });
+
+    // End active sessions on startup; always require login first
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+    useEffect(() => {
+        try {
+            localStorage.removeItem('amex_logged_in');
+        } catch { }
+    }, []);
+
+    // Toast event listener
+    useEffect(() => {
+        const handler = (e) => {
+            const { message, type } = e.detail || {};
+            if (!message) return;
+            const id = `t_${Date.now()}_${Math.random()}`;
+            setToasts(prev => [...prev, { id, message, type: type || 'info' }]);
+            setTimeout(() => {
+                setToasts(prev => prev.filter(t => t.id !== id));
+            }, 4000);
+        };
+        window.addEventListener('amex-toast', handler);
+        return () => window.removeEventListener('amex-toast', handler);
+    }, []);
+
+    // Load available personas from backend API
+    useEffect(() => {
+        fetchMembers()
+            .then(data => {
+                if (Array.isArray(data) && data.length > 0) {
+                    setPersonas(data);
+                    setCurrentUser(curr => {
+                        const matched = data.find(m => m.id === curr?.id);
+                        return matched || curr;
+                    });
+                }
+            })
+            .catch(() => { });
+    }, []);
+
+    // Refresh cards for active member from backend database
+    const refreshCards = (memberId = currentUser?.id) => {
+        fetchCards(memberId || 'RKA-00-8821')
             .then(serverCards => {
                 if (Array.isArray(serverCards) && serverCards.length > 0) {
-                    setCards(prev => prev.map(c => {
-                        const match = serverCards.find(sc => sc.id === c.id || sc.last4 === c.last4);
-                        return match ? { ...c, limit: match.credit_limit || c.limit, balance: match.current_balance || c.balance } : c;
-                    }));
+                    const enriched = serverCards.map(sc => enrichCard(sc, currentUser?.name));
+                    setCards(enriched);
                     setActiveCard(curr => {
-                        const match = serverCards.find(sc => sc.id === curr.id || sc.last4 === curr.last4);
-                        return match ? { ...curr, limit: match.credit_limit || curr.limit, balance: match.current_balance || curr.balance } : curr;
+                        const match = enriched.find(c => c.id === curr?.id || c.last4 === curr?.last4);
+                        return match || enriched[0];
                     });
                 }
             })
@@ -1535,8 +2499,29 @@ export default function App() {
     };
 
     useEffect(() => {
-        refreshCards();
-    }, []);
+        if (currentUser?.id) {
+            refreshCards(currentUser.id);
+        }
+    }, [currentUser?.id]);
+
+    const handleLogin = (user) => {
+        setCurrentUser(user);
+        setIsLoggedIn(true);
+        try {
+            localStorage.setItem('amex_current_user', JSON.stringify(user));
+        } catch { }
+        setScreen('profile');
+    };
+
+    const handleSignOut = () => {
+        setIsLoggedIn(false);
+        try {
+            localStorage.removeItem('amex_logged_in');
+            localStorage.removeItem('amex_current_user');
+        } catch { }
+        setScreen('profile');
+        showToast('Signed out of AmEx Servicing', 'info');
+    };
 
     const goToAudit = (id) => {
         setAuditHighlight(id);
@@ -1561,6 +2546,16 @@ export default function App() {
 
     const showVoiceOverlay = voiceMode && isChatScreen;
 
+    // Login Gate
+    if (!isLoggedIn) {
+        return (
+            <>
+                <ScreenLogin onLogin={handleLogin} availablePersonas={personas} />
+                <ToastContainer toasts={toasts} onDismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
+            </>
+        );
+    }
+
     return (
         <div style={{ display: 'flex', height: '100vh', background: 'var(--surface)', fontFamily: "'Inter',system-ui,sans-serif", overflow: 'hidden' }}>
             {/* Sidebar */}
@@ -1569,6 +2564,7 @@ export default function App() {
                 setScreen={s => { setScreen(s); setVoiceMode(false); }}
                 collapsed={collapsed}
                 setCollapsed={setCollapsed}
+                currentUser={currentUser}
             />
 
             {/* Main Stage */}
@@ -1581,6 +2577,39 @@ export default function App() {
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        {/* Member Identity Badge */}
+                        <button
+                            onClick={() => setScreen('profile')}
+                            style={{
+                                display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px',
+                                borderRadius: 20, border: '1px solid var(--border-subtle)',
+                                background: 'var(--surface)', cursor: 'pointer', fontSize: 12,
+                                fontWeight: 600, color: 'var(--amex-navy)', transition: 'all 0.15s'
+                            }}
+                            title="View your profile"
+                            onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--amex-blue)')}
+                            onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-subtle)')}
+                        >
+                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10B981' }} />
+                            <span>{currentUser?.name || 'Card Member'}</span>
+                            <span style={{ fontSize: 10, color: 'rgba(10,22,40,0.4)', fontWeight: 500 }}>({currentUser?.tier || 'Platinum'})</span>
+                        </button>
+
+                        {/* Sign Out Button */}
+                        <button
+                            onClick={handleSignOut}
+                            style={{
+                                padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(220,38,38,0.2)',
+                                background: '#fff', color: '#DC2626', fontSize: 11, fontWeight: 600,
+                                cursor: 'pointer', transition: 'all 0.15s'
+                            }}
+                            title="Sign out of your account"
+                            onMouseEnter={e => { e.currentTarget.style.background = '#FEF2F2'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+                        >
+                            Sign Out
+                        </button>
+
                         {isChatScreen && !showVoiceOverlay && (
                             <ActiveCardPill card={activeCard} onClick={() => setShowCardSel(true)} />
                         )}
@@ -1621,17 +2650,17 @@ export default function App() {
 
                         <button
                             onClick={() => setScreen('profile')}
-                            style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg,#016FD0,#0A1628)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                            title="Riya Kapoor Profile"
+                            style={{ width: 32, height: 32, borderRadius: '50%', background: currentUser?.avatar_bg || 'linear-gradient(135deg,#016FD0,#0A1628)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                            title={`${currentUser?.name || 'Member'} Profile`}
                         >
-                            <span style={{ color: '#fff', fontSize: 11, fontWeight: 700 }}>RK</span>
+                            <span style={{ color: '#fff', fontSize: 11, fontWeight: 700 }}>{currentUser?.avatar || 'RK'}</span>
                         </button>
                     </div>
                 </header>
 
                 <main style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
                     {showVoiceOverlay ? (
-                        <VoiceCallView onEnd={() => setVoiceMode(false)} card={activeCard} />
+                        <VoiceCallView onEnd={() => setVoiceMode(false)} card={activeCard} currentUser={currentUser} />
                     ) : (
                         <>
                             {screen === 'landing' && (
@@ -1639,6 +2668,7 @@ export default function App() {
                                     onStartChat={handleStartChat}
                                     activeCard={activeCard}
                                     onCardClick={() => setShowCardSel(true)}
+                                    currentUser={currentUser}
                                 />
                             )}
                             {screen === 'chat' && (
@@ -1649,16 +2679,25 @@ export default function App() {
                                     onAudit={goToAudit}
                                     onVoiceSwitch={() => setVoiceMode(true)}
                                     onCardUpdated={refreshCards}
+                                    currentUser={currentUser}
                                 />
                             )}
                             {screen === 'audit' && (
                                 <ScreenAudit highlightId={auditHighlight} />
                             )}
                             {screen === 'escalation' && (
-                                <ScreenEscalation cards={cards} />
+                                <ScreenEscalation
+                                    cards={cards}
+                                    currentUser={currentUser}
+                                    onRefreshCards={refreshCards}
+                                />
                             )}
                             {screen === 'profile' && (
-                                <ScreenProfile cards={cards} />
+                                <ScreenProfile
+                                    cards={cards}
+                                    currentUser={currentUser}
+                                    onSignOut={handleSignOut}
+                                />
                             )}
                             {screen === 'history' && (
                                 <ScreenHistory />
@@ -1677,6 +2716,69 @@ export default function App() {
                     activeCardId={activeCard.id}
                 />
             )}
+
+            {/* Floating Toasts */}
+            <ToastContainer toasts={toasts} onDismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
         </div>
     );
 }
+
+// ── Web Speech API Controllers ─────────────────────────────────────────────
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+// 1. Text-to-Speech (TTS)
+export const speakAmexVoice = (text, { onStart, onEnd } = {}) => {
+    if (!('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel(); // Barge-in: stop any ongoing speech
+
+    // Clean markdown/bullet formatting for natural speech
+    const cleanText = text.replace(/[*_#`]/g, '').replace(/https?:\/\/\S+/g, '');
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+
+    // Prefer a polished English concierge voice
+    const voices = window.speechSynthesis.getVoices();
+    const amexVoice = voices.find(v =>
+        v.name.includes('Google UK English Female') ||
+        v.name.includes('Samantha') ||
+        v.name.includes('Natural') ||
+        (v.lang.startsWith('en') && !v.localService)
+    ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+
+    if (amexVoice) utterance.voice = amexVoice;
+    utterance.rate = 1.0;
+    utterance.pitch = 1.05;
+
+    if (onStart) utterance.onstart = onStart;
+    if (onEnd) utterance.onend = onEnd;
+
+    window.speechSynthesis.speak(utterance);
+};
+
+export const stopSpeech = () => {
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+};
+
+// 2. Speech-to-Text (STT)
+export const createSpeechRecognizer = ({ onResult, onEnd, onError }) => {
+    if (!SpeechRecognition) {
+        alert('Web Speech API is not supported in this browser. Please use Chrome, Edge, or Safari.');
+        return null;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            transcript += event.results[i][0].transcript;
+        }
+        onResult(transcript, event.results[0].isFinal);
+    };
+
+    if (onEnd) recognition.onend = onEnd;
+    if (onError) recognition.onerror = onError;
+
+    return recognition;
+};

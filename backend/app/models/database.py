@@ -6,7 +6,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-DATABASE_URL = "sqlite:///./amex_intelligate.db"
+import os
+
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "amex_intelligate.db"))
+DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(
     DATABASE_URL, 
